@@ -7,12 +7,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 import pyperclip
 import time
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
 STATION_ID = "BNKE"
 START_DATE = "2021-06-01"
@@ -114,18 +115,42 @@ def get_chart_tooltips_helper(driver, series_xpaths, tooltip_xpaths, start_date_
             max_xpath = None
     
     values_all_points = []
-    elements = driver.find_elements(By.XPATH, max_xpath)  # get all points of the max series
-    for point in elements:  # loop directly over them
-        ActionChains(driver).move_to_element(point).perform()
+    # Loop over all points (max_count is known)
+    for i in range(max_count):
+        point_xpath = f"({max_xpath})[{i+1}]"
+        
+        # Initialize point variable
+        point = None
+        retry_count = 0
+        
+
+        while retry_count < 2:
+            try:
+                point = driver.find_element(By.XPATH, point_xpath)
+                ActionChains(driver).move_to_element(point).perform()
+                break  # success, exit retry loop
+            except StaleElementReferenceException:
+                print(f"⚠️ Stale element at point {i+1}, retrying...")
+                retry_count += 1
         
         values = []
         for tooltip_xpath in tooltip_xpaths:
+            elem = None
             try:
                 elem = driver.find_element(By.XPATH, tooltip_xpath)
                 values.append(elem.text.strip())
             except NoSuchElementException:
                 values.append("NaN")
+        
         values_all_points.append(values)
+                
+    df = pd.DataFrame(values_all_points, columns=columns)
+    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    df.replace("NaN", np.nan, inplace=True)
+    df.dropna(how="all", inplace=True)
+    output_dir = f"./results/{STATION_ID}"
+    os.makedirs(output_dir, exist_ok=True) 
+    df.to_csv(f"{output_dir}/{STATION_ID}_{START_DATE}.csv", index=False)
     
     return values_all_points
 
@@ -172,6 +197,8 @@ df = pd.DataFrame(flat_values, columns=columns)
 df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
 df.replace("NaN", np.nan, inplace=True)
 df.dropna(how="all", inplace=True)
-df.to_csv(f"./results/{STATION_ID}_{START_DATE}_to_{END_DATE}.csv", index=False)
+output_dir = f"./results/{STATION_ID}"
+os.makedirs(output_dir, exist_ok=True) 
+df.to_csv(f"{output_dir}/{STATION_ID}_{START_DATE}.csv", index=False)
 
 driver.quit()
