@@ -15,7 +15,7 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 STATION_ID = "BNKE"
-START_DATE = "2024-08-30"
+START_DATE = "2021-06-01"
 END_DATE = "2024-08-31"
 
 chrome_options = Options()
