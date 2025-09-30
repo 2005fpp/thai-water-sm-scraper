@@ -85,7 +85,7 @@ def get_chart_tooltips_helper(driver, series_xpaths, tooltip_xpaths, start_date_
     
     # Wait for chart points to appear
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 5).until(
             EC.visibility_of_element_located((By.XPATH, series_xpaths[0]))
         )
         print("✅ Chart points loaded!")
@@ -115,14 +115,11 @@ def get_chart_tooltips_helper(driver, series_xpaths, tooltip_xpaths, start_date_
             max_xpath = None
     
     values_all_points = []
-    # Loop over all points (max_count is known)
+    time.sleep(1)
     for i in range(max_count):
         point_xpath = f"({max_xpath})[{i+1}]"
-        
-        # Initialize point variable
         point = None
         retry_count = 0
-        
 
         while retry_count < 2:
             try:
