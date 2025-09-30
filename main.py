@@ -5,26 +5,21 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import pyperclip
 import time
 import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
+# ---------------- PARAMETERS ----------------
 STATION_ID = "BNKE"
 START_DATE = "2021-06-01"
 END_DATE = "2024-08-31"
-
-chrome_options = Options()
-chrome_options.add_argument("--start-maximized")
-service = Service("./chromedriver-win64/chromedriver.exe")
-driver = webdriver.Chrome(service=service, options=chrome_options)
-
-driver.get(f"https://partners.thaiwater.net:3007/soilMoisture/th/chartSoilMoisture/{STATION_ID}/20")
+OUTPUT_DIR = f"./results/{STATION_ID}"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 columns = ["Time", "Level_10cm", "Level_30cm", "Level_60cm", "Level_100cm"]
 
@@ -43,159 +38,124 @@ tooltip_xpaths = [
     "//*[name()='svg']//*[name()='g' and contains(@class,'highcharts-tooltip-box highcharts-color-3')]//*[name()='text']"
 ]
 
+# ---------------- SETUP DRIVER ----------------
+chrome_options = Options()
+chrome_options.add_argument("--start-maximized")
+service = Service("./chromedriver-win64/chromedriver.exe")
+driver = webdriver.Chrome(service=service, options=chrome_options)
+driver.get(f"https://partners.thaiwater.net:3007/soilMoisture/th/chartSoilMoisture/{STATION_ID}/20")
+
+# ---------------- HELPERS ----------------
+def safe_find(driver, xpath, retries=3, delay=0.5):
+    for _ in range(retries):
+        try:
+            return driver.find_element(By.XPATH, xpath)
+        except StaleElementReferenceException:
+            time.sleep(delay)
+        except NoSuchElementException:
+            return None
+    return None
+
+def safe_find_all(driver, xpath):
+    try:
+        return driver.find_elements(By.XPATH, xpath)
+    except:
+        return []
+
+def safe_move(driver, elem):
+    try:
+        ActionChains(driver).move_to_element(elem).perform()
+    except:
+        pass
+
+def set_date(element, date_value):
+    try:
+        driver.execute_script("arguments[0].setAttribute('type', 'text');", element)
+        pyperclip.copy(date_value)
+        element.click()
+        element.send_keys(Keys.CONTROL + "a")
+        element.send_keys(Keys.CONTROL + "v")
+    except Exception as e:
+        print(f"⚠️ Failed to set date {date_value}: {e}")
+
+# ---------------- MAIN FLOW (SAVE DAILY CSV) ----------------
 try:
-    station = WebDriverWait(driver, 10).until(
+    # Check station
+    station_elem = WebDriverWait(driver, 10).until(
         EC.visibility_of_element_located((By.XPATH, "//table[@class='table table-borderless']/tbody/tr/td[1]"))
     )
-    station_text = station.text.strip()
-    print("Found station:", station_text)
-    if station_text == STATION_ID:
-        print("✅ Station matches!")
-    else:
-        print(f"❌ Station mismatch. Expected {STATION_ID}, but got {station_text}")
+    if station_elem.text.strip() != STATION_ID:
+        print(f"❌ Station mismatch: {station_elem.text.strip()}")
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-except TimeoutException:
-    print("❌ Timeout: Station element not found within 10s")
-except NoSuchElementException:
-    print("❌ No such element found in the page")
-except Exception as e:
-    print("⚠️ Unexpected error:", e)
-    
-driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    # Date inputs
+    start_input = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "(//input[@name='date'])[1]")))
+    end_input = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "(//input[@name='date'])[2]")))
 
-start_date = WebDriverWait(driver, 10).until(
-    EC.visibility_of_element_located((By.XPATH, "(//input[@name='date'])[1]"))
-)
-end_date = WebDriverWait(driver, 10).until(
-    EC.visibility_of_element_located((By.XPATH, "(//input[@name='date'])[2]"))
-)
-
-def set_date_by_paste(element, date_value):
-    driver.execute_script("arguments[0].setAttribute('type', 'text');", element)
-    pyperclip.copy(date_value)
-    element.click()
-    element.send_keys(Keys.CONTROL + "a")
-    element.send_keys(Keys.CONTROL + "v")
-    
-def get_chart_tooltips_helper(driver, series_xpaths, tooltip_xpaths, start_date_input, end_date_input, START_DATE, END_DATE):
-    # Set the date range
-    time.sleep(1)
-    set_date_by_paste(end_date_input, END_DATE)
-    set_date_by_paste(start_date_input, START_DATE)
-    
-    # Wait for chart points to appear
-    try:
-        WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.XPATH, series_xpaths[0]))
-        )
-        print("✅ Chart points loaded!")
-    except TimeoutException:
-        print("❌ Timeout: Chart points did not load within 10s")
-        return []
-    
-    max_count = -1
-    max_xpath = None
-
-    for attempt in range(5):
-        for xpath in series_xpaths:
-            elements = driver.find_elements(By.XPATH, xpath)
-            count = len(elements)
-            if count > max_count:
-                max_count = count
-                max_xpath = xpath
-
-        print(f"Attempt {attempt+1}: XPath with most points: {max_xpath} ({max_count} points)")
-
-        if max_count <= 24:
-            break
-        else:
-            print("⚠️ Detected more than 24 points, retrying...")
-            time.sleep(1)
-            max_count = -1
-            max_xpath = None
-    
-    values_all_points = []
-    time.sleep(1)
-    for i in range(max_count):
-        point_xpath = f"({max_xpath})[{i+1}]"
-        point = None
-        retry_count = 0
-
-        while retry_count < 2:
-            try:
-                point = driver.find_element(By.XPATH, point_xpath)
-                ActionChains(driver).move_to_element(point).perform()
-                break  # success, exit retry loop
-            except StaleElementReferenceException:
-                print(f"⚠️ Stale element at point {i+1}, retrying...")
-                retry_count += 1
-        
-        values = []
-        for tooltip_xpath in tooltip_xpaths:
-            elem = None
-            try:
-                elem = driver.find_element(By.XPATH, tooltip_xpath)
-                values.append(elem.text.strip())
-            except NoSuchElementException:
-                values.append("NaN")
-        
-        values_all_points.append(values)
-                
-    df = pd.DataFrame(values_all_points, columns=columns)
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-    df.replace("NaN", np.nan, inplace=True)
-    df.dropna(how="all", inplace=True)
-    output_dir = f"./results/{STATION_ID}"
-    os.makedirs(output_dir, exist_ok=True) 
-    df.to_csv(f"{output_dir}/{STATION_ID}_{START_DATE}.csv", index=False)
-    
-    return values_all_points
-
-def get_chart_tooltips(driver, series_xpaths, tooltip_xpaths, start_date_input, end_date_input, start_date_str, end_date_str):
-    all_values = []
-
-    # Convert string dates to datetime objects
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-    end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+    # Prepare date range
+    start_dt = datetime.strptime(START_DATE, "%Y-%m-%d")
+    end_dt = datetime.strptime(END_DATE, "%Y-%m-%d")
     delta = timedelta(days=1)
 
-    current_date = start_date
-    while current_date <= end_date:
-        date_str = current_date.strftime("%Y-%m-%d")
-        print(f"Processing date: {date_str}")
-        
-        # Call your helper function for this date
-        values_by_date = get_chart_tooltips_helper(
-            driver,
-            series_xpaths,
-            tooltip_xpaths,
-            start_date_input,
-            end_date_input,
-            START_DATE=date_str,
-            END_DATE=date_str
-        )
-        all_values.append(values_by_date)
-        current_date += delta
+    # Loop per day
+    current_dt = start_dt
+    while current_dt <= end_dt:
+        date_str = current_dt.strftime("%Y-%m-%d")
+        print(f"Processing {date_str}...")
 
-    return all_values
+        # Set date
+        set_date(end_input, date_str)
+        set_date(start_input, date_str)
+        time.sleep(1)
 
-all_tooltip_values = get_chart_tooltips(
-    driver,
-    series_xpaths,
-    tooltip_xpaths,
-    start_date_input=start_date,
-    end_date_input=end_date,
-    start_date_str=START_DATE,
-    end_date_str=END_DATE
-)
+        # Wait chart
+        try:
+            WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, series_xpaths[0])))
+        except TimeoutException:
+            print(f"⚠️ Chart not loaded for {date_str}")
+            current_dt += delta
+            continue
 
-flat_values = [row for day in all_tooltip_values for row in day]
-df = pd.DataFrame(flat_values, columns=columns)
-df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-df.replace("NaN", np.nan, inplace=True)
-df.dropna(how="all", inplace=True)
-output_dir = f"./results/{STATION_ID}"
-os.makedirs(output_dir, exist_ok=True) 
-df.to_csv(f"{output_dir}/{STATION_ID}_{START_DATE}.csv", index=False)
+        # Find series with max points
+        max_count, max_xpath = 0, None
+        for xpath in series_xpaths:
+            elems = safe_find_all(driver, xpath)
+            if len(elems) > max_count:
+                max_count = len(elems)
+                max_xpath = xpath
 
-driver.quit()
+        if max_count == 0 or max_xpath is None:
+            print(f"⚠️ No points found for {date_str}")
+            current_dt += delta
+            continue
+
+        # Hover each point and collect tooltip
+        day_data = []
+        for i in range(max_count):
+            point_elem = safe_find(driver, f"({max_xpath})[{i+1}]")
+            if point_elem is None:
+                continue
+            safe_move(driver, point_elem)
+
+            values = []
+            for tip_xpath in tooltip_xpaths:
+                tip_elem = safe_find(driver, tip_xpath)
+                values.append(tip_elem.text.strip() if tip_elem else "NaN")
+            day_data.append(values)
+
+        # ---------------- SAVE DAILY CSV ----------------
+        if day_data:
+            df_day = pd.DataFrame(day_data, columns=columns)
+            df_day = df_day.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+            df_day.replace("NaN", np.nan, inplace=True)
+            df_day.dropna(how="all", inplace=True)
+            csv_path = f"{OUTPUT_DIR}/{STATION_ID}_{date_str}.csv"
+            df_day.to_csv(csv_path, index=False)
+            print(f"✅ Saved CSV for {date_str}: {csv_path}")
+        else:
+            print(f"⚠️ No data collected for {date_str}")
+
+        current_dt += delta
+
+finally:
+    driver.quit()
